@@ -6,10 +6,69 @@
  */
 
 /**
+ * Implements hook_install().
+ */
+function globalredirect_install() {
+  // Need to call this explicitly?
+  globalredirect_update_7100();
+}
+
+
+/**
  * Implements hook_uninstall().
  */
 function globalredirect_uninstall() {
   variable_del('globalredirect_settings');
+
+  globalredirect_schema_alter($schema);
+  foreach ($schema as $table => $def) {
+    foreach ($def['fields'] as $field => $spec) {
+      db_drop_field($table, $field);
+    }
+  }
+}
+
+/**
+ * Implements hook_schema_alter().
+ */
+function globalredirect_schema_alter(&$schema) {
+  // Add weight to url_alias.
+  $schema['url_alias']['fields']['weight'] = array(
+    'type' => 'int', 
+    'not null' => TRUE, 
+    'default' => 0, 
+    'description' => 'URL Alias weight.',
+  );
+}
+
+/**
+ * Add weight field to URL Alias.
+ */
+function globalredirect_update_7100() {
+  globalredirect_schema_alter($schema);
+  foreach ($schema as $table => $def) {
+    foreach ($def['fields'] as $field => $spec) {
+      db_add_field($table, $field, $spec);
+    }
+  }
+}
+
+/**
+ * Update weight to run after the path module.
+ */
+function globalredirect_update_7101() {
+  $path_module = db_select('system', 's')
+    ->fields('s')
+    ->condition('name', 'path', '=')
+    ->condition('type', 'module', '=')
+    ->execute()
+    ->fetchAssoc();
+  db_update('system')
+    ->fields(array('weight' => $path_module['weight']+1))
+    ->condition('name', 'globalredirect', '=')
+    ->condition('type', 'module', '=')
+    ->execute();
+  return 'Updated weight to run after the path module.';
 }
 
 /**

@@ -187,7 +187,7 @@ function globalredirect_init() {
   }
 
   // Find an alias (if any) for the request
-  $langcode = isset($options['language']->language) ? $options['language']->language : '';
+  $langcode = isset($options['language']->language) ? $options['language']->language : LANGUAGE_NONE;
   $alias = drupal_get_path_alias($current_path, $langcode);
 
   // Modules may alter outbound links by reference
@@ -255,6 +255,17 @@ function globalredirect_goto($path = '', array $options = array(), $http_respons
   if (!globalredirect_url_is_external($path)) {
     return drupal_goto($path, $options, $http_response_code);
   }
+}
+
+/**
+ * Get all path aliases for a path, ordered by weight.
+ */
+function _globalredirect_get_all_path_aliases($path) {
+  $args = array(
+    ':source' => $path
+  );
+  $aliases = db_query("SELECT pid, source, alias, weight FROM {url_alias} WHERE source = :source ORDER BY language ASC, weight ASC", $args)->fetchAll();
+  return $aliases;
 }
 
 /**
@@ -409,4 +420,118 @@ function globalredirect_request_path() {
   $path = ltrim($path, '/');
 
   return $path;
+}
+
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Adding weight field to URL Alias form.
+ */
+function globalredirect_form_alter(&$form, &$form_state, $form_id) {
+
+  if ($form_id == 'path_admin_form') {
+    
+    // Set a default weight, and try to load the $path from the form state.
+    $path = array('weight' => 0);
+    $aliases = array();
+    if (($args = $form_state['build_info']['args']) && !empty($args)) {
+      $path = $args[0];
+      $aliases = _globalredirect_get_all_path_aliases($path['source']);
+    }
+    
+    // Provide a list of all aliases for this path in the UI.
+    if (count($aliases) > 1) {
+      $header = array();
+      $header[] = array('data' => t('Alias'));
+      $header[] = array('data' => t('Weight'));
+      $rows = array();
+      
+      $form['#submit'][] = 'global_redirect_path_weight_submit';
+      
+      drupal_add_tabledrag('globalredirect_path_weights', 'order', 'sibling', 'globalredirect-path-weight');
+
+      $form['other_aliases'] = array(
+        '#title' => t('All Aliases for '.$path['source']),
+        '#type' => 'fieldset',
+      );
+      $form['other_aliases']['weights'] = array(
+        '#theme' => 'table',
+        '#header' => $header,
+        '#attributes' => array('id' => 'globalredirect_path_weights'),
+      );
+
+      foreach ($aliases as $alias) {
+        $form['other_aliases'][$alias->pid]['weight'] = array(
+          '#type' => 'textfield',
+          '#default_value' => $alias->weight,
+          '#name' => 'weights['.$alias->pid.']', // TODO: don't create this 'array' by hand.
+          '#attributes' => array(
+            'class' => array('globalredirect-path-weight'),
+          )
+        );
+        
+        $row = array(
+          'data' => array(
+            l($alias->alias, 'admin/config/search/path/edit/'.$alias->pid),
+            drupal_render($form['other_aliases'][$alias->pid]['weight']),
+          ),
+          'class' => array('draggable'),
+        );
+        if ($path['pid'] == $alias->pid) {
+          $row['class'][] = 'progress'; // TODO: don't overload some random class!
+        }
+      
+        $rows[] = $row;
+      }
+      
+      $form['other_aliases']['weights']['#rows'] = $rows;
+    }
+  }
+  
+  // Add a notice and link to forms with path sections that have multiple aliases.
+  if (isset($form['path']) && isset($form['path']['source']['#value'])) {
+    $aliases = _globalredirect_get_all_path_aliases($form['path']['source']['#value']);
+    if (count($aliases) > 1) {
+      $link = l('View all aliases.', 'admin/config/search/path/edit/'.$aliases[0]->pid);
+      $form['path']['multiple']['#markup'] = t("There is more than one URL alias for this path. ").$link;
+    }
+  }
+
+}
+
+/**
+ * Update the 'order' of path aliases by brute force:
+ * rewriting the path records completely based on their weight.
+ */
+function global_redirect_path_weight_submit($form, &$form_state) {
+  // Using $form_state['input'] instead of $form_state['values']
+  // because I clearly don't understand the Forms API well enough.
+  // TODO: pass weights in $form_state['values'] without breaking path_admin_form_submit()
+  if (!empty($form_state['input']['weights'])) {
+    // Get the pids, sorted from high to low.
+    $pids = array_keys($form_state['input']['weights']);
+    rsort($pids);
+    // Build an array of paths.
+    $weighted_paths = array();
+    foreach($form_state['input']['weights'] as $pid => $weight) {
+      if ($weight !== '') {
+        $weighted_paths[$weight] = path_load(array('pid' => $pid));
+      }
+    }
+    // Sorted by weight from low to high.
+    ksort($weighted_paths);
+    // For each alias, overwrite the record with the next lower pid.
+    //  - This is kind of nuts, really, but it will allow us to always have the lowest weighted
+    //    alias be treated as the primary. 
+    foreach ($weighted_paths as $weight => $path) {
+      $path['weight'] = $weight;
+      $path['pid'] = current($pids);
+      next($pids);
+      path_save($path);
+      drupal_set_message(t('The weight for alias @alias has been saved.', array('@alias' => $path['alias'])));
+    }
+    // Clear the path cache for this source.
+    drupal_clear_path_cache($form_state['values']['source']);
+  }
 }
