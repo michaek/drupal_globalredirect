@@ -264,7 +264,8 @@ function _globalredirect_get_all_path_aliases($path) {
   $args = array(
     ':source' => $path
   );
-  $aliases = db_query("SELECT pid, source, alias, weight FROM {url_alias} WHERE source = :source ORDER BY language ASC, weight ASC", $args)->fetchAll();
+  // Effectively to the system, pid is weight reversed, so we'll order by pid.
+  $aliases = db_query("SELECT pid, source, alias, weight FROM {url_alias} WHERE source = :source ORDER BY language ASC, pid DESC", $args)->fetchAll();
   return $aliases;
 }
 
@@ -493,6 +494,9 @@ function globalredirect_form_alter(&$form, &$form_state, $form_id) {
   if (isset($form['path']) && isset($form['path']['source']['#value'])) {
     $aliases = _globalredirect_get_all_path_aliases($form['path']['source']['#value']);
     if (count($aliases) > 1) {
+      // It seems like the default value for this form is often the wrong alias. Let's force it.
+      $form['path']['alias']['#default_value'] = $aliases[0]->alias;
+      
       $link = l('View all aliases.', 'admin/config/search/path/edit/'.$aliases[0]->pid);
       $form['path']['multiple']['#markup'] = t("There is more than one URL alias for this path. ").$link;
     }
